@@ -1,0 +1,201 @@
+node server.js
+const mongoose = require('mongoose');
+
+const connectDB = async () => {
+  try {
+    await mongoose.connect('mongodb://localhost:27017/daily_expenses', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('MongoDB connected');
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  mobile: { type: String, required: true },
+  password: { type: String, required: true },
+});
+
+module.exports = mongoose.model('User', userSchema);
+const mongoose = require('mongoose');
+
+const expenseSchema = new mongoose.Schema({
+  description: { type: String, required: true },
+  amount: { type: Number, required: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  participants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }],
+  splitMethod: { type: String, enum: ['equal', 'exact', 'percentage'], required: true },
+  splitDetails: { type: Map, of: Number, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
+module.exports = mongoose.model('Expense', expenseSchema);
+const User = require('../models/userModel');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+// Register a new user
+exports.registerUser = async (req, res) => {
+  const { name, email, mobile, password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = new User({ name, email, mobile, password: hashedPassword });
+    await user.save();
+    res.status(201).json({ message: 'User registered', user });
+  } catch (error) {
+    res.status(500).json({ error: 'Registration failed' });
+  }
+};
+
+// Login user and generate JWT token
+exports.loginUser = async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: 'User not found' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const token = jwt.sign({ id: user._id }, 'secret', { expiresIn: '1h' });
+    res.json({ token });
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed' });
+  }
+};
+
+// Get user details
+exports.getUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    res.json(user);
+  } catch (error) {
+    res.status(404).json({ error: 'User not found' });
+  }
+};
+const Expense = require('../models/expenseModel');
+const User = require('../models/userModel');
+
+// Add a new expense
+exports.addExpense = async (req, res) => {
+  const { description, amount, participants, splitMethod, splitDetails } = req.body;
+
+  try {
+    // Validation: for percentage method, ensure the sum is 100
+    if (splitMethod === 'percentage') {
+      const totalPercentage = Object.values(splitDetails).reduce((a, b) => a + b, 0);
+      if (totalPercentage !== 100) {
+        return res.status(400).json({ error: 'Percentages must sum to 100%' });
+      }
+    }
+
+    const expense = new Expense({
+      description,
+      amount,
+      createdBy: req.user.id,
+      participants,
+      splitMethod,
+      splitDetails,
+    });
+
+    await expense.save();
+    res.status(201).json({ message: 'Expense added', expense });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to add expense' });
+  }
+};
+
+// Get individual user's expenses
+exports.getUserExpenses = async (req, res) => {
+  try {
+    const expenses = await Expense.find({ participants: req.params.userId });
+    res.json(expenses);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve expenses' });
+  }
+};
+
+// Get overall expenses
+exports.getOverallExpenses = async (req, res) => {
+  try {
+    const expenses = await Expense.find({});
+    res.json(expenses);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve expenses' });
+  }
+};
+const jwt = require('jsonwebtoken');
+
+exports.protect = (req, res, next) => {
+  let token;
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) return res.status(401).json({ error: 'Not authorized, no token' });
+
+  try {
+    const decoded = jwt.verify(token, 'secret');
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Not authorized, token failed' });
+  }
+};
+const express = require('express');
+const { registerUser, loginUser, getUser } = require('../controllers/userController');
+const { protect } = require('../middlewares/authMiddleware');
+
+const router = express.Router();
+
+router.post('/register', registerUser);
+router.post('/login', loginUser);
+router.get('/:id', protect, getUser);
+
+module.exports = router;
+const express = require('express');
+const { addExpense, getUserExpenses, getOverallExpenses } = require('../controllers/expenseController');
+const { protect } = require('../middlewares/authMiddleware');
+
+const router = express.Router();
+
+router.post('/', protect, addExpense);
+router.get('/user/:userId', protect, getUserExpenses);
+router.get('/overall', protect, getOverallExpenses);
+
+module.exports = router;
+const express = require('express');
+const bodyParser = require('body-parser');
+const connectDB = require('./config/db');
+
+const userRoutes = require('./routes/userRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
+
+const app = express();
+
+// Connect Database
+connectDB();
+
+// Middlewares
+app.use(bodyParser.json());
+
+// Routes
+app.use('/api/users', userRoutes);
+app.use('/api/expenses', expenseRoutes);
+
+module.exports = app;
+const app = require('./app');
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
